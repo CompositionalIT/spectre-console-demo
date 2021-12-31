@@ -1,20 +1,30 @@
-﻿open Spectre.Console
-open System.Collections.Generic
-open System
+﻿open System
+open Spectre.Console
 
 module StarWars =
-    type People = FSharp.Data.JsonProvider<"https://swapi.dev/api/people">
-    type Species = FSharp.Data.JsonProvider<"https://swapi.dev/api/species/1">
-    type Planet = FSharp.Data.JsonProvider<"https://swapi.dev/api/planets/1">
+    module Caching =
+        open Microsoft.Extensions.Caching.Memory
+        open Polly
 
-    let cache f =
-        let d = Dictionary()
-        fun x ->
-            if not (d.ContainsKey x) then d.[x] <- f x
-            d.[x]
+        let build func =
+            let cache =
+                Policy.Cache(
+                    Caching.Memory.MemoryCacheProvider(
+                        new MemoryCache(MemoryCacheOptions())
+                    ),
+                    Caching.RelativeTtl TimeSpan.MaxValue
+                )
+            fun arg -> cache.Execute((fun _ -> func arg), Context (string arg))
 
-    let getSpecies : string -> _ = cache Species.Load
-    let getPlanet : string -> _ = cache Planet.Load
+    open FSharp.Data
+
+    type People = JsonProvider<"https://swapi.dev/api/people">
+    type Species = JsonProvider<"https://swapi.dev/api/species/1">
+    type Planet = JsonProvider<"https://swapi.dev/api/planets/1">
+
+    let getSpecies : string -> _ = Caching.build Species.Load
+    let getPlanet : string -> _ = Caching.build Planet.Load
+
     let getPeople () =
         let rec getPage (people:People.Root) = seq {
             people.Results
@@ -23,37 +33,38 @@ module StarWars =
         }
         People.GetSample() |> getPage
 
+let (|ParsedConsoleColor|_|) (color:string) =
+    let capitalised = (Char.ToUpper(color.[0]).ToString()) + color.[1..]
+    match ConsoleColor.TryParse capitalised with
+    | true, color -> Some (ParsedConsoleColor color)
+    | false, _ -> None
+
 let table =
     Table(Caption = TableTitle "Star Wars Characters")
         .Centered()
         .DoubleBorder()
 
-[ "Name"; "Eye Colour" ;"Hair Colour" ;"Species" ;"Homeworld" ]
-|> List.iter (table.AddColumn >> ignore)
-
-type System.String with
-    member this.Capitalise () = (Char.ToUpper(this.[0]).ToString()) + this.[1..]
+for column in [ "Name"; "Eye Colour"; "Hair Colour"; "Species"; "Homeworld" ] do
+    table.AddColumn column |> ignore
 
 for person in StarWars.getPeople() |> Seq.concat |> Seq.take 10 do
-    let greyOrWhite = function
-        | "Unknown" | "n/a" | "none" | "unknown" -> ConsoleColor.Gray
-        | _ -> ConsoleColor.White
     let species =
         match Array.tryHead person.Species with
         | Some s -> StarWars.getSpecies(s).Name
         | None -> "Unknown"
-    let homeworld = StarWars.getPlanet person.Homeworld |> fun s -> s.Name
-    let validateColor (color:string) =
-        match ConsoleColor.TryParse (color.Capitalise ()) with
-        | true, color -> color
-        | false, _ -> greyOrWhite color
+    let homeworld = StarWars.getPlanet person.Homeworld |> fun s -> s.Name    
+    let chooseColor color =
+        match color with
+        | ParsedConsoleColor color -> color
+        | "Unknown" | "n/a" | "none" | "unknown" -> ConsoleColor.Gray
+        | _ -> ConsoleColor.White
     table
         .AddRow(
-            Text(person.Name),
-            Markup($"[{validateColor person.EyeColor}]{person.EyeColor}[/]"),
-            Markup($"[{validateColor person.HairColor}]{person.HairColor}[/]"),
-            Markup($"[{greyOrWhite species}]{species}[/]"),
-            Markup($"[{greyOrWhite homeworld}]{homeworld}[/]")
+            Text person.Name,
+            Markup $"[{chooseColor person.EyeColor}]{person.EyeColor}[/]",
+            Markup $"[{chooseColor person.HairColor}]{person.HairColor}[/]",
+            Markup $"[{chooseColor species}]{species}[/]",
+            Markup $"[{chooseColor homeworld}]{homeworld}[/]"
         )
     |> ignore
 
